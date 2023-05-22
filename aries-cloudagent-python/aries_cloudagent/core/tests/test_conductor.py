@@ -36,7 +36,7 @@ from ...transport.wire_format import BaseWireFormat
 from ...utils.stats import Collector
 from ...version import __version__
 from ...wallet.base import BaseWallet
-from ...wallet.did_method import SOV
+from ...wallet.did_method import SOV, DIDMethods
 from ...wallet.key_type import ED25519
 from .. import conductor as test_module
 
@@ -87,6 +87,7 @@ class StubContextBuilder(ContextBuilder):
         context.injector.bind_instance(ProfileManager, InMemoryProfileManager())
         context.injector.bind_instance(ProtocolRegistry, ProtocolRegistry())
         context.injector.bind_instance(BaseWireFormat, self.wire_format)
+        context.injector.bind_instance(DIDMethods, DIDMethods())
         context.injector.bind_instance(DIDResolver, DIDResolver([]))
         context.injector.bind_instance(EventBus, MockEventBus())
         return context
@@ -100,7 +101,7 @@ class StubCollectorContextBuilder(StubContextBuilder):
 
 
 class TestConductor(IsolatedAsyncioTestCase, Config, TestDIDs):
-    async def test_startup(self):
+    async def test_startup_version_record_exists(self):
         builder: ContextBuilder = StubContextBuilder(self.test_settings)
         conductor = test_module.Conductor(builder)
 
@@ -113,9 +114,245 @@ class TestConductor(IsolatedAsyncioTestCase, Config, TestDIDs):
         ) as mock_logger, async_mock.patch.object(
             BaseStorage,
             "find_record",
+            async_mock.AsyncMock(return_value=async_mock.MagicMock(value="v0.7.3")),
+        ), async_mock.patch.object(
+            test_module,
+            "get_upgrade_version_list",
+            async_mock.MagicMock(
+                return_value=["v0.7.4", "0.7.5", "v0.8.0-rc1", "v8.0.0", "v0.8.1-rc2"]
+            ),
+        ), async_mock.patch.object(
+            test_module,
+            "upgrade",
+            async_mock.AsyncMock(),
+        ):
+            mock_outbound_mgr.return_value.registered_transports = {
+                "test": async_mock.MagicMock(schemes=["http"])
+            }
+            await conductor.setup()
+
+            session = await conductor.root_profile.session()
+
+            wallet = session.inject(BaseWallet)
+            await wallet.create_public_did(
+                SOV,
+                ED25519,
+            )
+
+            mock_inbound_mgr.return_value.setup.assert_awaited_once()
+            mock_outbound_mgr.return_value.setup.assert_awaited_once()
+
+            mock_inbound_mgr.return_value.registered_transports = {}
+            mock_outbound_mgr.return_value.registered_transports = {}
+
+            await conductor.start()
+
+            mock_inbound_mgr.return_value.start.assert_awaited_once_with()
+            mock_outbound_mgr.return_value.start.assert_awaited_once_with()
+
+            mock_logger.print_banner.assert_called_once()
+
+            await conductor.stop()
+
+            mock_inbound_mgr.return_value.stop.assert_awaited_once_with()
+            mock_outbound_mgr.return_value.stop.assert_awaited_once_with()
+
+    async def test_startup_version_no_upgrade_add_record(self):
+        builder: ContextBuilder = StubContextBuilder(self.test_settings)
+        conductor = test_module.Conductor(builder)
+
+        with async_mock.patch.object(
+            test_module, "InboundTransportManager", autospec=True
+        ) as mock_inbound_mgr, async_mock.patch.object(
+            test_module, "OutboundTransportManager", autospec=True
+        ) as mock_outbound_mgr, async_mock.patch.object(
+            BaseStorage,
+            "find_record",
+            async_mock.AsyncMock(return_value=async_mock.MagicMock(value="v0.8.1")),
+        ), async_mock.patch.object(
+            test_module,
+            "get_upgrade_version_list",
+            async_mock.MagicMock(return_value=[]),
+        ), async_mock.patch.object(
+            test_module,
+            "add_version_record",
+            async_mock.AsyncMock(),
+        ):
+            mock_outbound_mgr.return_value.registered_transports = {
+                "test": async_mock.MagicMock(schemes=["http"])
+            }
+            await conductor.setup()
+            session = await conductor.root_profile.session()
+            wallet = session.inject(BaseWallet)
+            await wallet.create_public_did(
+                SOV,
+                ED25519,
+            )
+            mock_inbound_mgr.return_value.registered_transports = {}
+            mock_outbound_mgr.return_value.registered_transports = {}
+            await conductor.start()
+            await conductor.stop()
+
+        with async_mock.patch.object(
+            test_module, "InboundTransportManager", autospec=True
+        ) as mock_inbound_mgr, async_mock.patch.object(
+            test_module, "OutboundTransportManager", autospec=True
+        ) as mock_outbound_mgr, async_mock.patch.object(
+            BaseStorage,
+            "find_record",
             async_mock.AsyncMock(
                 return_value=async_mock.MagicMock(value=f"v{__version__}")
             ),
+        ), async_mock.patch.object(
+            test_module,
+            "get_upgrade_version_list",
+            async_mock.MagicMock(return_value=[]),
+        ):
+            mock_outbound_mgr.return_value.registered_transports = {
+                "test": async_mock.MagicMock(schemes=["http"])
+            }
+            await conductor.setup()
+            session = await conductor.root_profile.session()
+            wallet = session.inject(BaseWallet)
+            await wallet.create_public_did(
+                SOV,
+                ED25519,
+            )
+            mock_inbound_mgr.return_value.registered_transports = {}
+            mock_outbound_mgr.return_value.registered_transports = {}
+            await conductor.start()
+            await conductor.stop()
+
+    async def test_startup_version_force_upgrade(self):
+        test_settings = {
+            "admin.webhook_urls": ["http://sample.webhook.ca"],
+            "upgrade.from_version": "v0.7.5",
+            "upgrade.force_upgrade": True,
+        }
+        builder: ContextBuilder = StubContextBuilder(test_settings)
+        conductor = test_module.Conductor(builder)
+        with async_mock.patch.object(
+            test_module, "InboundTransportManager", autospec=True
+        ) as mock_inbound_mgr, async_mock.patch.object(
+            test_module, "OutboundTransportManager", autospec=True
+        ) as mock_outbound_mgr, async_mock.patch.object(
+            test_module, "LoggingConfigurator", autospec=True
+        ) as mock_logger, async_mock.patch.object(
+            BaseStorage,
+            "find_record",
+            async_mock.AsyncMock(return_value=async_mock.MagicMock(value="v0.8.0")),
+        ), async_mock.patch.object(
+            test_module,
+            "get_upgrade_version_list",
+            async_mock.MagicMock(return_value=["v0.8.0-rc1", "v8.0.0", "v0.8.1-rc1"]),
+        ), async_mock.patch.object(
+            test_module,
+            "upgrade",
+            async_mock.AsyncMock(),
+        ):
+            mock_outbound_mgr.return_value.registered_transports = {
+                "test": async_mock.MagicMock(schemes=["http"])
+            }
+            await conductor.setup()
+            session = await conductor.root_profile.session()
+            wallet = session.inject(BaseWallet)
+            await wallet.create_public_did(
+                SOV,
+                ED25519,
+            )
+            mock_inbound_mgr.return_value.registered_transports = {}
+            mock_outbound_mgr.return_value.registered_transports = {}
+            await conductor.start()
+            await conductor.stop()
+
+        with async_mock.patch.object(
+            test_module, "InboundTransportManager", autospec=True
+        ) as mock_inbound_mgr, async_mock.patch.object(
+            test_module, "OutboundTransportManager", autospec=True
+        ) as mock_outbound_mgr, async_mock.patch.object(
+            test_module, "LoggingConfigurator", autospec=True
+        ) as mock_logger, async_mock.patch.object(
+            BaseStorage,
+            "find_record",
+            async_mock.AsyncMock(return_value=async_mock.MagicMock(value="v0.7.0")),
+        ), async_mock.patch.object(
+            test_module,
+            "get_upgrade_version_list",
+            async_mock.MagicMock(return_value=["v0.7.2", "v0.7.3", "v0.7.4"]),
+        ), async_mock.patch.object(
+            test_module,
+            "upgrade",
+            async_mock.AsyncMock(),
+        ):
+            mock_outbound_mgr.return_value.registered_transports = {
+                "test": async_mock.MagicMock(schemes=["http"])
+            }
+            await conductor.setup()
+            session = await conductor.root_profile.session()
+            wallet = session.inject(BaseWallet)
+            await wallet.create_public_did(
+                SOV,
+                ED25519,
+            )
+            mock_inbound_mgr.return_value.registered_transports = {}
+            mock_outbound_mgr.return_value.registered_transports = {}
+            await conductor.start()
+            await conductor.stop()
+
+        with async_mock.patch.object(
+            test_module, "InboundTransportManager", autospec=True
+        ) as mock_inbound_mgr, async_mock.patch.object(
+            test_module, "OutboundTransportManager", autospec=True
+        ) as mock_outbound_mgr, async_mock.patch.object(
+            test_module, "LoggingConfigurator", autospec=True
+        ) as mock_logger, async_mock.patch.object(
+            BaseStorage,
+            "find_record",
+            async_mock.AsyncMock(side_effect=StorageNotFoundError()),
+        ), async_mock.patch.object(
+            test_module,
+            "get_upgrade_version_list",
+            async_mock.MagicMock(return_value=["v0.8.0-rc1", "v8.0.0", "v0.8.1-rc1"]),
+        ), async_mock.patch.object(
+            test_module,
+            "upgrade",
+            async_mock.AsyncMock(),
+        ):
+            await conductor.setup()
+            session = await conductor.root_profile.session()
+            wallet = session.inject(BaseWallet)
+            await wallet.create_public_did(
+                SOV,
+                ED25519,
+            )
+            mock_inbound_mgr.return_value.registered_transports = {}
+            mock_outbound_mgr.return_value.registered_transports = {}
+            await conductor.start()
+            mock_logger.print_banner.assert_called_once()
+            await conductor.stop()
+
+    async def test_startup_version_record_not_exists(self):
+        builder: ContextBuilder = StubContextBuilder(self.test_settings)
+        conductor = test_module.Conductor(builder)
+
+        with async_mock.patch.object(
+            test_module, "InboundTransportManager", autospec=True
+        ) as mock_inbound_mgr, async_mock.patch.object(
+            test_module, "OutboundTransportManager", autospec=True
+        ) as mock_outbound_mgr, async_mock.patch.object(
+            test_module, "LoggingConfigurator", autospec=True
+        ) as mock_logger, async_mock.patch.object(
+            BaseStorage,
+            "find_record",
+            async_mock.AsyncMock(side_effect=StorageNotFoundError()),
+        ), async_mock.patch.object(
+            test_module,
+            "get_upgrade_version_list",
+            async_mock.MagicMock(return_value=["v0.8.0-rc1", "v8.0.0", "v0.8.1-rc1"]),
+        ), async_mock.patch.object(
+            test_module,
+            "upgrade",
+            async_mock.AsyncMock(),
         ):
             mock_outbound_mgr.return_value.registered_transports = {
                 "test": async_mock.MagicMock(schemes=["http"])
@@ -221,7 +458,6 @@ class TestConductor(IsolatedAsyncioTestCase, Config, TestDIDs):
         ) as mock_outbound_mgr, async_mock.patch.object(
             test_module, "LoggingConfigurator", autospec=True
         ) as mock_logger:
-
             mock_inbound_mgr.return_value.sessions = ["dummy"]
             mock_outbound_mgr.return_value.outbound_buffer = [
                 async_mock.MagicMock(state=QueuedOutboundMessage.STATE_ENCODE),
@@ -262,7 +498,6 @@ class TestConductor(IsolatedAsyncioTestCase, Config, TestDIDs):
         with async_mock.patch.object(
             conductor.dispatcher, "queue_message", autospec=True
         ) as mock_dispatch_q:
-
             message_body = "{}"
             receipt = MessageReceipt(direct_response_mode="snail mail")
             message = InboundMessage(message_body, receipt)
@@ -1371,43 +1606,6 @@ class TestConductorMediationSetup(IsolatedAsyncioTestCase, Config):
             await conductor.setup()
             mock_genesis_load.assert_called_once()
 
-    async def test_startup_x_version_mismatch(self):
-        builder: ContextBuilder = StubContextBuilder(self.test_settings)
-        conductor = test_module.Conductor(builder)
-
-        with async_mock.patch.object(
-            test_module, "InboundTransportManager", autospec=True
-        ) as mock_inbound_mgr, async_mock.patch.object(
-            test_module, "OutboundTransportManager", autospec=True
-        ) as mock_outbound_mgr, async_mock.patch.object(
-            test_module, "LOGGER"
-        ) as mock_logger, async_mock.patch.object(
-            BaseStorage,
-            "find_record",
-            async_mock.AsyncMock(return_value=async_mock.MagicMock(value=f"v0.6.0")),
-        ):
-            mock_outbound_mgr.return_value.registered_transports = {
-                "test": async_mock.MagicMock(schemes=["http"])
-            }
-            await conductor.setup()
-
-            session = await conductor.root_profile.session()
-
-            wallet = session.inject(BaseWallet)
-            await wallet.create_public_did(
-                SOV,
-                ED25519,
-            )
-
-            mock_inbound_mgr.return_value.setup.assert_awaited_once()
-            mock_outbound_mgr.return_value.setup.assert_awaited_once()
-
-            mock_inbound_mgr.return_value.registered_transports = {}
-            mock_outbound_mgr.return_value.registered_transports = {}
-            with self.assertRaises(RuntimeError):
-                await conductor.start()
-                mock_logger.exception.assert_called_once()
-
     async def test_startup_x_no_storage_version(self):
         builder: ContextBuilder = StubContextBuilder(self.test_settings)
         conductor = test_module.Conductor(builder)
@@ -1422,6 +1620,10 @@ class TestConductorMediationSetup(IsolatedAsyncioTestCase, Config):
             BaseStorage,
             "find_record",
             async_mock.AsyncMock(side_effect=StorageNotFoundError()),
+        ), async_mock.patch.object(
+            test_module,
+            "upgrade",
+            async_mock.AsyncMock(),
         ):
             mock_outbound_mgr.return_value.registered_transports = {
                 "test": async_mock.MagicMock(schemes=["http"])

@@ -15,6 +15,7 @@ from ..messages.pres import V20Pres, V20PresSchema
 from ..messages.pres_format import V20PresFormat
 from ..messages.pres_proposal import V20PresProposal, V20PresProposalSchema
 from ..messages.pres_request import V20PresRequest, V20PresRequestSchema
+from ..messages.pres_webhook import V20PresExRecordWebhook
 
 from . import UNENCRYPTED_TAGS
 
@@ -181,6 +182,33 @@ class V20PresExRecord(BaseExchangeRecord):
         except StorageError as err:
             LOGGER.exception(err)
 
+    # Override
+    async def emit_event(self, session: ProfileSession, payload: Any = None):
+        """
+        Emit an event.
+
+        Args:
+            session: The profile session to use
+            payload: The event payload
+        """
+
+        if not self.RECORD_TOPIC:
+            return
+
+        if self.state:
+            topic = f"{self.EVENT_NAMESPACE}::{self.RECORD_TOPIC}::{self.state}"
+        else:
+            topic = f"{self.EVENT_NAMESPACE}::{self.RECORD_TOPIC}"
+
+        if session.profile.settings.get("debug.webhooks"):
+            if not payload:
+                payload = self.serialize()
+        else:
+            payload = V20PresExRecordWebhook(**self.__dict__)
+            payload = payload.__dict__
+
+        await session.profile.notify(topic, payload)
+
     @property
     def record_value(self) -> Mapping:
         """Accessor for the JSON record value generated for this credential exchange."""
@@ -244,11 +272,7 @@ class V20PresExRecordSchema(BaseExchangeSchema):
         description="Present-proof exchange initiator: self or external",
         example=V20PresExRecord.INITIATOR_SELF,
         validate=validate.OneOf(
-            [
-                getattr(V20PresExRecord, m)
-                for m in vars(V20PresExRecord)
-                if m.startswith("INITIATOR_")
-            ]
+            V20PresExRecord.get_attributes_by_prefix("INITIATOR_", walk_mro=False)
         ),
     )
     role = fields.Str(
@@ -256,22 +280,14 @@ class V20PresExRecordSchema(BaseExchangeSchema):
         description="Present-proof exchange role: prover or verifier",
         example=V20PresExRecord.ROLE_PROVER,
         validate=validate.OneOf(
-            [
-                getattr(V20PresExRecord, m)
-                for m in vars(V20PresExRecord)
-                if m.startswith("ROLE_")
-            ]
+            V20PresExRecord.get_attributes_by_prefix("ROLE_", walk_mro=False)
         ),
     )
     state = fields.Str(
         required=False,
         description="Present-proof exchange state",
         validate=validate.OneOf(
-            [
-                getattr(V20PresExRecord, m)
-                for m in vars(V20PresExRecord)
-                if m.startswith("STATE_")
-            ]
+            V20PresExRecord.get_attributes_by_prefix("STATE_", walk_mro=True)
         ),
     )
     pres_proposal = fields.Nested(
