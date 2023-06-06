@@ -7,8 +7,7 @@ This TFM implements a self-sovereign identity use case. In particular, it implem
 
 Analyzing the core parts of the system independently, we can represent each generic core part in a specific role in our prototype and define the objectives each part needs to accomplish:
 
-  -The university plays the role of the issuer, defining the schema and issuing credentials using the aforementioned schema.
-  -The student plays the role of the holder, he will store the credentials the university issued and use them as they see fit, changing the presentation of the credential as he wants to keep private information safe.
-  -The company will act as a verifier, it will receive the credential the student presented and check its veracity.
-  -The credentials we will be using will be the certificates an university emits, such as degrees, masters and doctorates.
-
+* The university plays the role of the issuer, defining the schema and issuing credentials using the aforementioned schema.
+* The student plays the role of the holder, he will store the credentials the university issued and use them as they see fit, changing the presentation of the credential as he wants to keep private information safe.
+* The company will act as a verifier, it will receive the credential the student presented and check its veracity.
+* The credentials we will be using will be the certificates an university emits, such as degrees, masters and doctorates.
